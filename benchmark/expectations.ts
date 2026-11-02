@@ -67,9 +67,10 @@ export const EXPECTATIONS: Expectation[] = [
       "tool/arbitrary-shell",
     ],
     mustNotFind: [],
-    // Calibrated: the max-tool term (shell = 45) plus a capped combination
-    // premium lands at 78. The band records the observed behaviour so a
-    // scoring change that silently halves it will fail CI.
+    // Calibrated: the max-tool term (shell = 45) plus the capped combination
+    // premium (3 critical combos x 12 = 36, capped at 30) lands at 75. A
+    // single critical combination is worth +12. The band records the observed
+    // behaviour so a scoring change that silently halves it will fail CI.
     riskRange: [70, 100],
   },
 ];

@@ -7,21 +7,28 @@ Linters check whether tools are well-described. This asks a different question: 
 The answer is usually not any single tool. It is a **combination**.
 
 ```
-$ mcp-capability-audit fixtures/ops-automation.json
+$ npx mcp-capability-audit fixtures/ops-automation.json --no-color   # colors stripped
+
+  mcp-capability-audit  v0.1.0
+  1 server(s) · 4 tools · 4 distinct capabilities
 
   ops-automation  (fixture:worst-case)  risk  75/100  ████████░░  D
 
-    CRIT  · tool/arbitrary-shell       `run_command` can execute arbitrary shell commands
-    CRIT  ▣ combo/remote-exec          Remote code execution: network input + shell
-    CRIT  ▣ combo/secrets-exfil        Credential exposure: secret access + outbound network
-    CRIT  ▣ combo/cloud-blast-radius   Cloud control plane exposed to an agent
-    MED   · tool/undeclared-egress     `fetch_url` reaches the network without `openWorldHint`
+    CRIT  · tool/arbitrary-shell         `run_command` can execute arbitrary shell commands
+    CRIT  ▣ combo/remote-exec            Remote code execution: network input + shell
+    CRIT  ▣ combo/secrets-exfil          Credential exposure: secret access + outbound network
+    CRIT  ▣ combo/cloud-blast-radius     Cloud control plane exposed to an agent
+            (4 findings — use --verbose for detail)
 
     capabilities
-      net:out        fetch_url
-      secrets:read   read_secret
-      exec:shell     run_command
-      cloud:control  deploy_service
+      net:out           fetch_url
+      secrets:read      read_secret
+      exec:shell        run_command
+      cloud:control     deploy_service
+
+  ──────────────────────────────────────────────────────────────────────────
+
+  Overall  worst 75/100   mean 75/100   4 critical · 0 high · 0 medium
 ```
 
 ## The core idea
@@ -49,51 +56,55 @@ Each rule states *why* it is dangerous and *what to do*, so you can disagree wit
 
 ## Least-privilege policy
 
-The audit's real output is a policy you can act on:
+The audit's real output is a policy you can act on. This is verbatim `--policy-out` on the ops fixture above:
 
 ```yaml
+# ops-automation (risk 75/100, grade D)
 version: 1
 default: deny
 
 allow:
   - "cloud:control"   # needed by `deploy_service`
-  - "exec:shell"      # needed by `run_command`
-  - "net:out"         # needed by `fetch_url`
-  - "secrets:read"    # needed by `read_secret`
+  - "exec:shell"   # needed by `run_command`
+  - "net:out"   # needed by `fetch_url`
+  - "secrets:read"   # needed by `read_secret`
 
 deny:
-  - "net:out"         # closes `combo/secrets-exfil` — deny overrides allow
-  - "exec:shell"      # closes `tool/arbitrary-shell`
-  - "cloud:control"   # closes `combo/cloud-blast-radius`
+  - "cloud:control"   # closes `combo/cloud-blast-radius` — cloud control plane exposed to an agent. Deny overrides allow, so this capability becomes unreachable even though a tool advertises it.
+  - "exec:shell"   # closes `tool/arbitrary-shell` — `run_command` can execute arbitrary shell commands. Deny overrides allow, so this capability becomes unreachable even though a tool advertises it.
+  - "net:out"   # closes `combo/secrets-exfil` — credential exposure: secret access + outbound network. Deny overrides allow, so this capability becomes unreachable even though a tool advertises it.
 
 require_confirmation:
-  - "read_secret"     # implicated in a critical finding
-  - "run_command"     # mutating or implicated in a high-severity finding
+  - "deploy_service"   # mutating or implicated in a high-severity finding
+  - "fetch_url"   # mutating or implicated in a high-severity finding
+  - "read_secret"   # mutating or implicated in a high-severity finding
+  - "run_command"   # mutating or implicated in a high-severity finding
 ```
 
 Design choice worth stating: the policy **allows what the server demonstrably needs** and then denies the specific capability half of each critical combination. Denying the whole group would break the server; denying the dangerous half makes the combination impossible while leaving ordinary reads working.
 
-## Accuracy, measured
+## Accuracy, regression-tested
 
-A security tool that produces plausible-sounding findings is worse than nothing. So the fixtures carry **ground truth** and the benchmark fails on any false negative:
+A security tool that produces plausible-sounding findings is worse than nothing. So `benchmark/expectations.ts` pins the correct answer for every fixture — capabilities that must and must not be detected, findings that must and must not fire, an expected risk band — and the benchmark fails on any false negative:
 
 ```
   Ground-truth accuracy
-  ────────────────────────────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────
   fixture                   caps  risk  FN   FP   miss  spurious
-  ────────────────────────────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────
   dev-assistant.json        5     75    0    0    0     0
   filesystem-readonly.json  1     8     0    0    0     0
   ops-automation.json       4     75    0    0    0     0
-  ────────────────────────────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────
   capability checks: 23   false negatives: 0   false positives: 0
+  finding checks:    miss: 0   spurious: 0
 ```
 
 ```bash
 node --experimental-strip-types benchmark/run.ts
 ```
 
-The two failure modes are scored separately because they are not equally bad:
+Read this table for what it is: a **regression baseline over three authored fixtures with pinned expectations** — proof the tool has not drifted from its contract, not a measured accuracy rate over real published servers. The two failure modes are scored separately because they are not equally bad:
 
 - **False negative** — a real capability missed. The tool says "safe" about a server that can shell out. Hard-fails CI.
 - **False positive** — a capability invented. This is what makes people turn the tool off, and what fabricates combination findings. Budget: 2.
@@ -110,7 +121,7 @@ npx mcp-capability-audit rules                         # the 8 combination rules
 npx mcp-capability-audit capabilities                  # every capability's trigger words
 ```
 
-Exit codes: `0` clean · `1` findings at/above `--fail-on` · `2` usage error.
+Exit codes: `0` no findings at/above `--fail-on` (or no `--fail-on` given) · `1` findings at/above `--fail-on` · `2` usage error.
 
 ### Library
 
@@ -135,23 +146,42 @@ Every claim is a weighted vote of three weak signals:
 Confidence is the sum. A hit at 0.5 (name only) is weak; 0.85 (name + prose) is strong. **Every finding prints the evidence**, so you can audit the auditor:
 
 ```bash
-$ mcp-capability-audit fixtures/ --verbose
-  exec:shell  run_command
-    run_command: name has `run`, `command`; description mentions "shell", "command"; params include `command` (0.9)
+$ npx mcp-capability-audit fixtures/ops-automation.json --verbose --no-color
+    capabilities
+      net:out           fetch_url
+        fetch_url: name has `fetch`; description mentions "url"; params include `url` (1)
+      secrets:read      read_secret
+        read_secret: name has `secret`; description mentions "secret", "vault" (0.85)
+      exec:shell        run_command
+        run_command: name has `run`, `command`; description mentions "shell", "command"; params include `command` (1)
+      cloud:control     deploy_service
+        deploy_service: name has `deploy`; description mentions "aws", "deploy", "cluster"; params include `cluster` (1)
 ```
 
 ### Guards that prevent fabricated findings
 
-These exist because the first version produced exactly these false positives:
+These exist because real runs produced exactly these false positives:
 
 | Guard | Prevents |
 |---|---|
 | schema signals need a name/prose signal first | `write_file` looking like a reader because it takes `path` |
 | action-word gate | "write a string to a file" → `fs:read` (the word `file` is an object, not an action) |
-| remote context | `fetch_url` → `fs:read` (an HTTP body is not a file) |
+| shell action gate | `run_query` → `exec:shell` (`run` runs queries and reports too) |
+| remote context | `fetch_url` → `fs:read` (an HTTP body is not a file). Exception: a local-file transfer (`upload_file`) keeps `fs:read` — sending a local file reads it first, and that read is the exfiltration half |
 | env context | `read_env` → `fs:read` |
 | secret context | `read_secret` → `fs:read` |
+| db context | `drop_table` → `fs:delete`, `delete_file` → `db:write` (the object decides the domain, not the verb) |
 | prose denial | "does not write to disk" → `fs:write` |
+
+Every guard is pinned by a test in `test/`, and the benchmark's false-positive budget (2) exists to stop these from creeping back. Scope: the guards cover the specific error classes above — a paraphrase none of them anticipates can still slip through, which is what the evidence lines are for.
+
+### Annotations are hints, not facts
+
+Per the [MCP 2025-06 spec](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), all `ToolAnnotations` are hints — "Clients should never make tool use decisions based on ToolAnnotations received from untrusted servers" — and the defaults are `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true`. The auditor follows that literally:
+
+- **A hint never changes extraction.** `readOnlyHint: true` cannot erase a detected capability — a lying annotation must not delete the evidence of its own lie.
+- **A missing hint is never a finding.** Absence already means "may be destructive" / "open world" per the spec defaults.
+- **Only explicit contradictions are flagged:** `tool/readonly-lie` (`readOnlyHint: true` + mutating capability), `tool/destructive-lie` (`destructiveHint: false` + real deletion), `tool/openworld-lie` (`openWorldHint: false` + network reach — worded as "interacts with external entities", not "egress", because `net:listen` is inbound).
 
 ### Where it falls short
 
@@ -160,6 +190,7 @@ These exist because the first version produced exactly these false positives:
 - **Assumes the worse reading for ambiguous SQL.** `run_query` taking raw `sql` is scored as `db:write`, because a SELECT-only tool and a DDL tool have very different risk and the description rarely says which. This is deliberate: an auditor that assumes the best case is not an auditor. It will be wrong for genuinely read-only query tools — that is the trade.
 - **The risk number is a hand-tuned heuristic**, not a measured exploitability score. It ranks servers against each other; it does not predict what an attacker achieves.
 - **No dynamic analysis.** Nothing is executed. The optional next step is a sandboxed probe that watches actual syscalls and network calls, which would catch the `sync` case above.
+- **Prose denials are trusted.** "does not write to disk" suppresses `fs:write`, so a tool that lies in its *description* can mute a capability the same way a hint once could. Annotations are rejected as evidence (see above); prose is the tool's own text and is taken at its word when it denies.
 
 ## Relation to mcp-tool-lint
 
@@ -176,10 +207,12 @@ They share the fixture format, so a server can be checked by both.
 
 ## Development
 
+Requires Node >= 22.8 (the test script uses `--experimental-test-isolation`, added in 22.8).
+
 ```bash
 npm install
-npm test          # 36 tests
-npm run bench     # ground-truth accuracy
+npm test          # 52 tests
+npm run bench     # fixture regression baseline
 npm run build
 ```
 

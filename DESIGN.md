@@ -28,13 +28,13 @@ risk = min(100, max(tool risks) + min(30, Σ severity premium for combo findings
 
 - **max**, because one dangerous tool dominates.
 - **bounded premium**, because a server with many combinations is worse than the max tool alone, but rule count should not be able to push every server to 100.
-- The premium is capped at 30 so a single critical combination moves the needle (75 → 78 in the ops fixture) without swamping the tool-level signal.
+- The premium is capped at 30 so rule count cannot push every server to 100. In the ops fixture the three critical combinations contribute 3 x 12 = 36, which the cap trims to 30, so the score is 45 (shell) + 30 = 75. A single critical combination adds 12 (45 -> 57) — enough to move the needle without swamping the tool-level signal.
 
 The number is a **ranking heuristic**, not a measurement. It orders servers against each other. It does not predict what an attacker achieves, and the README says so.
 
 ---
 
-## 3. The extraction pipeline, and the four false-positive classes it had to fix
+## 3. The extraction pipeline, and the false-positive classes it had to fix
 
 Extraction combines three weak signals with fixed weights (name 0.5, prose 0.35, schema 0.15). Confidence is their sum, and every hit records its evidence.
 
@@ -63,6 +63,20 @@ Its description says it returns the "body". `contents`/`body`-ish words were tre
 Both share the verb `read` with `read_file`.
 
 **Fix:** two more context guards — env-targeted tools are not filesystem tools, and secret-targeted tools are not either. `read_secret` → `secrets:read` only.
+
+A later adversarial pass (pinned by tests and by `benchmark/`) found two more classes of the same shape:
+
+### 3.5 `run_query` → `exec:shell` (a fabricated CRITICAL)
+
+`run` is a name signal for `exec:shell`, and there was no action gate for it, so every `run_*` tool was reported as "can execute arbitrary shell commands".
+
+**Fix:** `exec:shell` now requires a shell-shaped word (`shell`, `command`, `bash`, `terminal`, `subprocess`, …) in name or prose — or a `command`/`cmd`/`script` param, which is evidence in its own right. `run` alone runs queries and reports too.
+
+### 3.6 `drop_table` → `fs:delete`, `delete_file` → `db:write`
+
+The verbs overlap (`delete`, `drop`, `create`) across both domains, so DDL tools were classified as filesystem destruction and file deletion as a database write. That fabricates combination findings in *both* directions.
+
+**Fix:** a db-context guard, symmetrical to the remote/env/secret guards. If the tool's object is a database (`table`, `query`, `sql`, `database`, `row`, `record`), filesystem capabilities are suppressed; database capabilities require that context (a raw `sql` param counts). The object — not the verb — decides the domain.
 
 Each guard has a test that pins it, and the benchmark's false-positive budget (2) exists specifically to stop these from creeping back.
 
@@ -115,11 +129,11 @@ Deny always overrides allow, so a server advertising `net:out` becomes unreachab
 
 ---
 
-## 7. Fixtures carry ground truth, because "looks plausible" is not a standard
+## 7. Expectations pin the ground truth, because "looks plausible" is not a standard
 
-Every fixture declares what the correct answer is — capabilities that must be detected, capabilities that must *not* be, findings that must and must not fire, and an expected risk band. The benchmark fails on any false negative.
+The fixtures themselves are just tool lists; the ground truth lives in `benchmark/expectations.ts`, one entry per fixture: capabilities that must be detected, capabilities that must *not* be, findings that must and must not fire, and an expected risk band. The benchmark fails on any false negative.
 
-This is what makes the tool defensible. A security scanner that emits convincing prose is easy to write and impossible to trust. The ground-truth file is the contract.
+Be precise about what this proves: it is a **regression baseline over three authored fixtures**, not a measured accuracy rate. It makes the tool defensible against silent regressions — a security scanner that emits convincing prose is easy to write and impossible to trust, and the expectations file is the contract — but it says nothing about recall on servers nobody has authored a fixture for. The README says the same thing.
 
 Two calibrations happened because of it, both in the *expectations* rather than the code, and both documented above:
 
@@ -130,11 +144,23 @@ Changing an expectation to match the code is normally a smell. Here it was corre
 
 ---
 
+## 8. Annotations are hints, and the spec says so
+
+MCP 2025-06 defines `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` as **hints**: "all properties in ToolAnnotations are hints... Clients should never make tool use decisions based on ToolAnnotations received from untrusted servers." The defaults matter as much: `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true`.
+
+Two consequences, both learned the hard way:
+
+1. **A hint never changes extraction.** An earlier version let `readOnlyHint: true` suppress mutating capabilities — which meant a lying annotation erased the evidence of its own lie, and `delete_file` annotated read-only audited as a no-op. Extraction is now hint-blind; a contradicting hint produces `tool/readonly-lie` instead of silence.
+2. **Missing is not undeclared.** Because `destructiveHint` defaults to true and `openWorldHint` to true, absence already declares "may be destructive" / "open world". The earlier `tool/undeclared-destructive` and `tool/undeclared-egress` findings fired on *absence*, which misread the defaults and flagged every fetch tool on the planet. Now only explicit contradictions are reported: `tool/destructive-lie` (`destructiveHint: false` with real deletion) and `tool/openworld-lie` (`openWorldHint: false` with network reach — including `net:listen`, since a listening socket is reachable by external clients even though nothing leaves the machine; the wording is therefore "interacts with external entities", not "egress").
+
+---
+
 ## What is not proven
 
 - **Extraction is lexical.** It reads declarations, not behaviour. A tool called `sync` that shells out internally is invisible. The honest fix is dynamic analysis (sandbox + syscall/network observation), which is not in this repo.
 - **The combination rules are a curated list of eight.** They cover the pairs that show up in real incident reports and in the OWASP agentic-threat material. They are not a systematic enumeration of all capability interactions.
 - **The risk score is not calibrated against exploits.** No exploit was executed. The number ranks servers; it does not estimate loss.
 - **No false-negative test for the `sync` case.** The benchmark only proves the auditor is right about servers whose behaviour is visible in their declarations.
+- **The benchmark is a regression baseline, not an accuracy measurement.** Three authored fixtures with pinned expectations prove the tool has not regressed; they do not estimate precision/recall on real published servers.
 
 The next experiment worth running: take ten real published MCP servers, audit them, and compare the findings against a manual review by someone who knows each server. That measures the thing this repo cannot measure about itself.
