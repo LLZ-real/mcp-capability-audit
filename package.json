@@ -1,0 +1,42 @@
+{
+  "name": "mcp-capability-audit",
+  "version": "0.1.0",
+  "description": "Audit what an MCP server can actually do: capability extraction, risk scoring, and least-privilege policy generation.",
+  "type": "module",
+  "license": "MIT",
+  "author": "李林臻 (https://github.com/LLZ-real)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LLZ-real/mcp-capability-audit.git"
+  },
+  "homepage": "https://github.com/LLZ-real/mcp-capability-audit#readme",
+  "bin": {
+    "mcp-capability-audit": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --experimental-strip-types src/cli.ts",
+    "test": "node --experimental-strip-types --test --experimental-test-isolation=none test/*.test.ts",
+    "bench": "node --experimental-strip-types benchmark/run.ts"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "least-privilege",
+    "agents",
+    "capability-analysis"
+  ],
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}

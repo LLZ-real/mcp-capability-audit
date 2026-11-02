@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out.txt
+v.txt
+p.txt
+p2.txt
+t.txt
+audit.json
+*.log
+.DS_Store
