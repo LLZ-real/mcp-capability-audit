@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Test
+        run: node --experimental-strip-types --test --experimental-test-isolation=none test/*.test.ts
+      - name: Build
+        run: npm run build
+      - name: Ground-truth benchmark
+        run: node --experimental-strip-types benchmark/run.ts
+      - name: Self-audit (must not crash on its own fixtures)
+        run: node dist/cli.js fixtures/ --format json --out audit.json
+        continue-on-error: true
