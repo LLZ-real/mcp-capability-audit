@@ -154,9 +154,12 @@ function renderCapabilityTable(s: ServerAudit, opts: RenderOptions): string {
   for (const cap of present) {
     const owners = s.tools.filter((t) => t.capabilities.some((h) => h.capability === cap));
     const names = owners.map((o) => o.name).join(", ");
+    // Pad by the *plain* width: capabilityTag embeds ANSI codes when colored,
+    // and padEnd on the painted string breaks column alignment.
     L.push(
       "      " +
-        capabilityTag(cap, color).padEnd(color ? 28 : 16) +
+        capabilityTag(cap, color) +
+        " ".repeat(Math.max(1, 16 - cap.length)) +
         "  " +
         paint(color, C.gray, truncate(names, 46)),
     );

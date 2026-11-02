@@ -19,7 +19,7 @@
   },
   "files": ["dist"],
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.8.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

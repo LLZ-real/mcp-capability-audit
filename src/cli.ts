@@ -3,7 +3,7 @@
  * CLI.
  *
  * Exit codes:
- *   0  no critical findings (and no --fail-on threshold breached)
+ *   0  no findings at or above --fail-on (or --fail-on not given)
  *   1  findings at or above --fail-on
  *   2  usage / IO error
  */
@@ -36,7 +36,7 @@ const HELP = `
     --version                     print version
     --help                        print this message
 
-  Exit codes: 0 clean · 1 findings at/above --fail-on · 2 usage error
+  Exit codes: 0 no findings at/above --fail-on (or no --fail-on given) · 1 findings at/above --fail-on · 2 usage error
 
   Severity: critical | high | medium | low
 `;
@@ -112,7 +112,7 @@ async function main(): Promise<number> {
       if (!sig) continue;
       L.push(`  ${cap}`);
       L.push(`    name:   ${sig.name.join(", ") || "—"}`);
-      L.push(`    prose:  ${sig.prose.slice(0, 8).join(", ") || "—"}`);
+      L.push(`    prose:  ${sig.prose.join(", ") || "—"}`);
       L.push(`    params: ${sig.schema.join(", ") || "—"}`);
       L.push("");
     }
