@@ -43,7 +43,10 @@ const NAME_SIGNALS: Record<Capability, string[]> = {
   "exec:shell": ["exec", "shell", "bash", "sh", "zsh", "cmd", "powershell", "spawn", "system", "run", "command", "terminal", "subprocess"],
   "exec:code": ["eval", "evaluate", "interpret", "script", "compile", "execute"],
   // `search` alone is not a database signal: search_files searches the disk.
-  "db:read": ["query", "select", "lookup", "sql", "db", "database"],
+  // `table`/`tables` are: `list_tables` and `describe_table` are database
+  // introspection in their own right (the db:read action gate keeps DDL
+  // names like `drop_table` from leaking in).
+  "db:read": ["query", "select", "lookup", "sql", "db", "database", "table", "tables"],
   "db:write": ["insert", "update", "upsert", "delete", "drop", "alter", "create", "truncate", "migrate", "commit"],
   // Reading one named env var is env:read. `secrets:read` is reserved for
   // tools that specifically target a secret store; conflating the two made
@@ -68,12 +71,15 @@ const PROSE_SIGNALS: Record<Capability, string[]> = {
   // "overwrite" is a write, not a delete. Deletion needs explicit language.
   "fs:delete": ["delete", "deletes", "remove", "removes", "erase", "purge", "destroy", "permanently", "unrecoverable", "drop", "drops"],
   "net:out": ["http", "https", "url", "request", "requests", "network", "internet", "remote", "endpoint", "download", "upload", "webhook", "api", "web"],
-  "net:listen": ["listen", "listens", "port", "server", "socket", "bind"],
+  // "server" is deliberately NOT a signal: "ping the remote server" and
+  // "check the deployment server" are not listeners. Listening needs a verb
+  // or socket-shaped word.
+  "net:listen": ["listen", "listens", "listening", "serve", "serves", "port", "socket", "bind", "daemon"],
   "exec:shell": ["shell", "command", "commands", "bash", "powershell", "terminal", "subprocess", "execute", "executes", "runs"],
   "exec:code": ["evaluate", "expression", "script", "interpreter", "compiles", "eval"],
   // A database is only a database if the prose says so.
   "db:read": ["query", "queries", "select", "rows", "records", "database", "table", "tables", "sql"],
-  "db:write": ["insert", "update", "delete", "rows affected", "commit", "transaction", "migrate", "alter", "drop"],
+  "db:write": ["insert", "inserts", "update", "updates", "upsert", "upserts", "delete", "deletes", "rows affected", "commit", "transaction", "migrate", "alter", "drop", "drops", "create", "creates", "truncate", "truncates"],
   "secrets:read": ["secret", "secrets", "token", "tokens", "credential", "credentials", "password", "api key", "private key", "vault"],
   "proc:spawn": ["process", "daemon", "background", "worker", "service"],
   "env:read": ["environment variable", "env var", "configuration", "config"],
@@ -123,22 +129,6 @@ export const CAPABILITY_SIGNALS: Record<Capability, { name: string[]; prose: str
   ) as Record<Capability, { name: string[]; prose: string[]; schema: string[] }>;
 
 /**
- * Tools that read and write through the *same* generic verb.
- *
- * `query` and `exec` both take `sql`, but a SELECT-only tool and a DDL tool
- * have wildly different risk. When the description does not disambiguate we
- * must assume the worse reading — an auditor that assumes the best case is
- * not an auditor.
- */
-function assumesWriteFromName(tool: McpTool): Capability | null {
-  const w = words(tool.name);
-  const d = (tool.description ?? "").toLowerCase();
-  // `run_select_query` is explicitly read-only.
-  if (w.includes("select") || /\bread[- ]only\b/.test(d) || /\bselect\b/.test(d)) return null;
-  return null;
-}
-
-/**
  * A local-only capability should not be inferred from a tool whose target is
  * clearly remote. `fetch_url` returns a "body" over HTTP; that body is not a
  * file on disk.
@@ -149,6 +139,21 @@ const REMOTE_CONTEXT = new Set([
 ]);
 
 const LOCAL_CAPS: ReadonlySet<Capability> = new Set<Capability>(["fs:read", "fs:write", "fs:delete", "env:read", "env:write"]);
+
+/**
+ * Exception to the remote-context guard: a local-file *transfer* reads a
+ * local file in order to send it. `upload_file` is exactly the read half of
+ * an exfiltration channel, and suppressing its `fs:read` because the
+ * destination is remote would blind the audit to the one thing it exists to
+ * catch. Detected by a transfer verb plus a local object word.
+ */
+const TRANSFER_VERBS = new Set(["upload", "uploads", "send", "sends", "publish", "publishes"]);
+const LOCAL_OBJECTS = new Set(["file", "files", "path", "paths", "directory", "dir", "folder", "folders", "disk"]);
+
+function isLocalFileTransfer(tool: McpTool): boolean {
+  const w = [...words(tool.name), ...words(tool.description ?? "")];
+  return w.some((x) => TRANSFER_VERBS.has(x)) && w.some((x) => LOCAL_OBJECTS.has(x));
+}
 
 /**
  * A tool that targets environment variables is not touching the filesystem,
@@ -175,6 +180,57 @@ const SECRET_OBJECTS = new Set([
 function isSecretTargeted(tool: McpTool): boolean {
   const w = [...words(tool.name), ...words(tool.description ?? "")];
   return w.some((x) => SECRET_OBJECTS.has(x));
+}
+
+/**
+ * A tool whose object is a database is not a filesystem tool, and vice versa:
+ * `drop_table` deletes a table, `delete_file` deletes a file. The verb can be
+ * identical — the object decides which domain the capability belongs to.
+ */
+const DB_OBJECTS = new Set([
+  "table", "tables", "query", "queries", "sql", "statement", "statements",
+  "database", "databases", "row", "rows", "record", "records", "db",
+]);
+
+function isDbContext(tool: McpTool): boolean {
+  const w = [
+    ...words(tool.name),
+    ...words(tool.description ?? ""),
+    ...Object.keys(tool.inputSchema?.properties ?? {}).flatMap(words),
+  ];
+  return w.some((x) => DB_OBJECTS.has(x));
+}
+
+/**
+ * Mutation verbs that turn an env-targeted tool into an `env:write` and away
+ * from `env:read`: `set_env` reads nothing, `unset_env` writes state.
+ * Name-only, so a description like "does not update anything" cannot trip it.
+ */
+const ENV_MUTATION_VERBS = new Set([
+  "set", "setenv", "unset", "unsetenv", "put", "write", "overwrite",
+  "delete", "remove", "clear", "update", "export",
+]);
+
+function nameHasEnvMutationVerb(tool: McpTool): boolean {
+  return words(tool.name).some((x) => ENV_MUTATION_VERBS.has(x));
+}
+
+/**
+ * Deletion-style destruction: real deletion (`fs:delete`), or a database
+ * write whose verb drops data (`drop_table`, `truncate_logs`). Raw-SQL tools
+ * are `db:write` by the assume-worst rule but are not *called* destructive —
+ * over-reporting destruction trains users to ignore it.
+ */
+const DESTRUCTIVE_DB_VERBS = new Set([
+  "delete", "deletes", "drop", "drops", "truncate", "truncates",
+  "purge", "purges", "destroy", "destroys", "wipe", "wipes",
+]);
+
+export function looksDestructive(raw: McpTool, caps: Capability[]): boolean {
+  if (caps.includes("fs:delete")) return true;
+  if (!caps.includes("db:write")) return false;
+  const w = [...words(raw.name), ...words(raw.description ?? "")];
+  return w.some((x) => DESTRUCTIVE_DB_VERBS.has(x));
 }
 
 function isRemoteContext(tool: McpTool): boolean {
@@ -206,12 +262,16 @@ function proseDenies(tool: McpTool, capability: Capability): boolean {
  * Without this split, every filesystem tool looks like a reader.
  */
 const ACTION_WORDS: Partial<Record<Capability, string[]>> = {
-  "fs:read": ["read", "reads", "load", "loads", "cat", "open", "parse", "inspect", "list", "stat"],
+  "fs:read": ["read", "reads", "load", "loads", "cat", "open", "parse", "inspect", "list", "stat", "upload", "uploads", "send", "sends", "publish", "publishes"],
   "fs:write": ["write", "writes", "save", "saves", "create", "creates", "append", "appends", "overwrite", "modify", "modifies", "store", "stores", "persist"],
   "fs:delete": ["delete", "deletes", "remove", "removes", "erase", "purge", "destroy", "drop", "drops", "truncate", "wipe"],
   "net:out": ["fetch", "request", "requests", "download", "upload", "post", "send", "crawl", "scrape", "browse", "connect"],
-  "db:read": ["query", "queries", "select", "lookup", "search"],
-  "db:write": ["insert", "update", "delete", "commit", "migrate", "alter", "truncate"],
+  // Shell execution needs a shell-shaped word. `run` alone is not one:
+  // `run_query`, `run_report` and `run_search` run things that are not
+  // commands, and calling them "arbitrary shell" is a fabricated critical.
+  "exec:shell": ["shell", "command", "commands", "bash", "zsh", "powershell", "terminal", "subprocess", "exec", "cmd", "sh"],
+  "db:read": ["query", "queries", "select", "lookup", "search", "list", "lists", "describe", "describes", "show", "shows", "inspect", "inspects", "count", "counts"],
+  "db:write": ["insert", "inserts", "update", "updates", "upsert", "upserts", "delete", "deletes", "commit", "migrate", "migrates", "alter", "alters", "truncate", "truncates", "create", "creates", "drop", "drops"],
 };
 
 /**
@@ -272,12 +332,18 @@ function hitsFor(tool: McpTool, capability: Capability): CapabilityHit[] {
   return out;
 }
 
-/** Is this tool declared read-only by its author? */
-function declaredReadOnly(tool: McpTool): boolean {
-  return tool.annotations?.readOnlyHint === true;
-}
-
-/** Does the description explicitly say it only reads? */
+/**
+ * Extraction is deliberately blind to `annotations`. Per the MCP 2025-06 spec
+ * all ToolAnnotations are hints that "are not guaranteed to provide a faithful
+ * description of tool behavior" — "Clients should never make tool use
+ * decisions based on ToolAnnotations received from untrusted servers" — so a
+ * self-declared `readOnlyHint` must never erase a capability the text evidence
+ * supports: that would let a lying annotation delete the evidence of its own
+ * lie. Contradicting hints are surfaced as findings in `composition.ts`
+ * instead of muting extraction.
+ *
+ * Does the description explicitly say it only reads?
+ */
 function proseReadOnly(tool: McpTool): boolean {
   const d = (tool.description ?? "").toLowerCase();
   return /\bread[- ]only\b|\bdoes not (modify|write|change)\b|\bnever (writes|modifies)\b|\bonly reads\b/.test(d);
@@ -298,20 +364,35 @@ export function extractCapabilities(tool: McpTool, assumeWorst = true): Capabili
     hits.push(...hitsFor(tool, cap));
   }
 
-  const readOnlyDeclared = declaredReadOnly(tool) || proseReadOnly(tool);
+  const proseReadOnlyDeclared = proseReadOnly(tool);
   const remote = isRemoteContext(tool);
   const envTargeted = isEnvContext(tool);
   const secretTargeted = isSecretTargeted(tool);
+  const dbTargeted = isDbContext(tool);
+  const localTransfer = isLocalFileTransfer(tool);
 
   const keep = hits.filter((h) => {
-    // A read-only declaration suppresses mutating capabilities.
-    if (readOnlyDeclared && isMutating(h.capability)) return false;
-    // A remote-targeted tool does not read the local disk.
-    if (remote && LOCAL_CAPS.has(h.capability)) return false;
+    // Prose that explicitly claims read-only suppresses mutating capabilities.
+    if (proseReadOnlyDeclared && isMutating(h.capability)) return false;
+    // A remote-targeted tool's content comes over the wire, so it is not a
+    // local read — except a local-file transfer (`upload_file`), which reads a
+    // local file precisely in order to send it. Losing that `fs:read` would
+    // hide the read half of an exfiltration channel.
+    if (remote && LOCAL_CAPS.has(h.capability) && !(h.capability === "fs:read" && localTransfer)) return false;
     // An env-targeted tool is not touching the filesystem.
     if (envTargeted && FS_CAPS.has(h.capability)) return false;
     // A secret-targeted tool is not a file tool either.
     if (secretTargeted && FS_CAPS.has(h.capability)) return false;
+    // A database-targeted tool is not a filesystem tool: `drop_table` drops
+    // a table, and `create_table` writes DDL, not files.
+    if (dbTargeted && FS_CAPS.has(h.capability)) return false;
+    // Database capabilities need database context (a raw `sql`/`statement`
+    // param counts and is handled by detectGenericEffectParam below):
+    // `delete_file` is not a database write no matter how the verb overlaps.
+    if ((h.capability === "db:read" || h.capability === "db:write") && !dbTargeted) return false;
+    // `set_env` / `unset_env` mutate environment state; their name says
+    // "env", which must not be read as a *read* of it.
+    if (h.capability === "env:read" && envTargeted && nameHasEnvMutationVerb(tool)) return false;
     // Explicit denial in the prose wins over weak lexical evidence.
     if (proseDenies(tool, h.capability)) return false;
     return true;
@@ -323,6 +404,17 @@ export function extractCapabilities(tool: McpTool, assumeWorst = true): Capabili
     const genericEffect = detectGenericEffectParam(tool);
     if (genericEffect && !keep.some((k) => k.capability === genericEffect.capability)) {
       keep.push(genericEffect);
+    }
+    // An env-targeted tool whose name carries a mutation verb writes the
+    // environment even when the verb is outside the env:write lexicon
+    // (`unset_env`, `clear_env`, `delete_env`).
+    if (envTargeted && nameHasEnvMutationVerb(tool) && !keep.some((k) => k.capability === "env:write")) {
+      keep.push({
+        capability: "env:write",
+        tool: tool.name,
+        evidence: "env-targeted tool with a mutating verb in its name",
+        confidence: 0.5,
+      });
     }
   }
 

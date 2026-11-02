@@ -133,14 +133,152 @@ test("a raw sql param is db:write unless the tool is explicitly read-only", () =
   assert.ok(!caps(selectOnly).includes("db:write"));
 });
 
-test("readOnlyHint suppresses mutating capabilities", () => {
+test("a secret tool is not a filesystem reader", () => {
   const t = tool({
-    name: "write_file",
-    description: "Write a string to a file.",
+    name: "read_secret",
+    description: "Read a secret from the vault by name and return its plaintext value.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } } },
+  });
+  const c = caps(t);
+  assert.ok(c.includes("secrets:read"));
+  assert.ok(!c.includes("fs:read"), "a vault is not a filesystem");
+});
+
+test("`run` in a name is not shell without a shell-shaped word", () => {
+  const query = tool({
+    name: "run_query",
+    description: "Run a query.",
+    inputSchema: { type: "object", properties: { sql: { type: "string" } } },
+  });
+  assert.ok(!caps(query).includes("exec:shell"), "run_query runs a query, not commands");
+
+  const report = tool({ name: "run_report", description: "Run the weekly report." });
+  assert.ok(!caps(report).includes("exec:shell"));
+
+  // ...but a genuine shell tool is still caught.
+  const shell = tool({
+    name: "run_command",
+    description: "Run a shell command.",
+    inputSchema: { type: "object", properties: { command: { type: "string" } } },
+  });
+  assert.ok(caps(shell).includes("exec:shell"));
+});
+
+test("DDL verbs are database writes, not filesystem effects", () => {
+  const drop = tool({
+    name: "drop_table",
+    description: "Drop a table from the database.",
+    inputSchema: { type: "object", properties: { table: { type: "string" } } },
+  });
+  assert.ok(caps(drop).includes("db:write"), "DROP TABLE is a database write");
+  assert.ok(!caps(drop).includes("fs:delete"), "a table is not a file");
+
+  const create = tool({
+    name: "create_table",
+    description: "Create a new table in the database.",
+    inputSchema: { type: "object", properties: { table: { type: "string" } } },
+  });
+  assert.ok(caps(create).includes("db:write"));
+  assert.ok(!caps(create).includes("fs:write"), "DDL does not write files");
+
+  const del = tool({
+    name: "delete_file",
+    description: "Delete a file from disk.",
+    inputSchema: { type: "object", properties: { path: { type: "string" } } },
+  });
+  assert.ok(caps(del).includes("fs:delete"));
+  assert.ok(!caps(del).includes("db:write"), "a file is not a database row");
+});
+
+test("a read-only SQL tool is db:read only, not a file reader", () => {
+  const t = tool({
+    name: "run_select_query",
+    description: "Execute a read-only SELECT statement and return rows.",
+    inputSchema: { type: "object", properties: { sql: { type: "string" } } },
+  });
+  const c = caps(t);
+  assert.ok(c.includes("db:read"));
+  assert.ok(!c.includes("fs:read"), "'read-only' about rows is not a file read");
+  assert.ok(!c.includes("db:write"));
+  assert.ok(!c.includes("exec:shell"));
+});
+
+test("a remote server in prose is not a listener", () => {
+  const ping = tool({
+    name: "ping_server",
+    description: "Ping the remote server and return latency.",
+    inputSchema: { type: "object", properties: { host: { type: "string" } } },
+  });
+  assert.ok(!caps(ping).includes("net:listen"), "pinging a server is not listening on one");
+
+  const status = tool({ name: "check_deployment", description: "Check the status of the deployment server." });
+  assert.ok(!caps(status).includes("net:listen"));
+
+  // ...but a genuine listener is still caught.
+  const listener = tool({
+    name: "start_server",
+    description: "Start an HTTP server listening on a port.",
+    inputSchema: { type: "object", properties: { port: { type: "number" } } },
+  });
+  assert.ok(caps(listener).includes("net:listen"));
+});
+
+test("database introspection verbs are db:read", () => {
+  const list = tool({
+    name: "list_tables",
+    description: "List the tables in the database.",
+    inputSchema: { type: "object", properties: { schema: { type: "string" } } },
+  });
+  assert.ok(caps(list).includes("db:read"));
+  assert.ok(!caps(list).includes("fs:read"), "listing tables is not reading files");
+
+  const describe = tool({ name: "describe_table", description: "Describe a table." });
+  assert.ok(caps(describe).includes("db:read"));
+
+  const show = tool({ name: "show_tables", description: "Show tables." });
+  assert.ok(caps(show).includes("db:read"));
+});
+
+test("a local-file transfer keeps fs:read; a fetch does not", () => {
+  const upload = tool({
+    name: "upload_file",
+    description: "Upload a file to the remote server over HTTP.",
+    inputSchema: { type: "object", properties: { path: { type: "string" } } },
+  });
+  const c = caps(upload);
+  assert.ok(c.includes("fs:read"), "uploading a file reads it first — that is the exfiltration half");
+  assert.ok(c.includes("net:out"));
+
+  const fetch = tool({
+    name: "fetch_url",
+    description: "Fetch a URL over HTTP and return the response body.",
+    inputSchema: { type: "object", properties: { url: { type: "string" } } },
+  });
+  assert.ok(!caps(fetch).includes("fs:read"), "an HTTP body is not a file");
+});
+
+test("set_env writes the environment; it does not read it", () => {
+  const t = tool({
+    name: "set_env",
+    description: "Set an environment variable.",
+    inputSchema: { type: "object", properties: { name: { type: "string" }, value: { type: "string" } } },
+  });
+  const c = caps(t);
+  assert.ok(c.includes("env:write"));
+  assert.ok(!c.includes("env:read"), "`set` mutates env state; the `env` in the name is the object, not a read");
+});
+
+test("readOnlyHint is an untrusted hint and never suppresses capabilities", () => {
+  const t = tool({
+    name: "delete_file",
+    description: "Delete a file from disk.",
     annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: { path: { type: "string" } } },
   });
-  assert.ok(!caps(t).includes("fs:write"));
+  assert.ok(
+    caps(t).includes("fs:delete"),
+    "a lying annotation must not erase the evidence of its own lie (MCP spec: annotations are untrusted hints)",
+  );
 });
 
 test("explicit prose denial suppresses the capability", () => {
