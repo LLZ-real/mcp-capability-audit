@@ -2,7 +2,7 @@
  * Audit assembly + risk scoring.
  */
 
-import { extractCapabilities, toolRisk, isMutating, isNetworked } from "./capabilities.ts";
+import { extractCapabilities, looksDestructive, toolRisk, isMutating, isNetworked } from "./capabilities.ts";
 import { compositionFindings, serverCapabilities, toolFindings } from "./composition.ts";
 import { generatePolicy } from "./policy.ts";
 import type {
@@ -25,6 +25,7 @@ export function auditTool(tool: McpTool): ToolCapabilities {
     name: tool.name,
     capabilities: hits,
     mutating: caps.some(isMutating),
+    destructive: looksDestructive(tool, caps),
     networked: caps.some(isNetworked),
     risk: toolRisk(hits),
   };
@@ -74,10 +75,13 @@ export function auditServer(input: ServerTools): ServerAudit {
   const tools = input.tools.map(auditTool);
 
   const findings: Finding[] = [];
-  for (const t of tools) {
-    const raw = input.tools.find((r) => r.name === t.name);
+  // Pair by index, not by name: two tools may share a name, and the raw
+  // declaration (annotations, schema) must be the one that belongs to this
+  // exact entry.
+  tools.forEach((t, i) => {
+    const raw = input.tools[i];
     if (raw) findings.push(...toolFindings(t, raw));
-  }
+  });
   findings.push(...compositionFindings(tools));
   findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 

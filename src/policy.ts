@@ -76,12 +76,14 @@ export function generatePolicy(tools: ToolCapabilities[], findings: Finding[]): 
     }
   }
 
-  // Tools that must be human-confirmed: anything destructive, or anything
-  // implicated in a critical/high finding.
+  // Tools that must be human-confirmed: anything destructive (deletion or
+  // destructive DDL like `drop_table`), anything with the sharpest single-tool
+  // edges (shell, cloud control), and anything implicated in a critical/high
+  // finding.
   const requireConfirmation = new Set<string>();
   for (const t of tools) {
     const caps = t.capabilities.map((c) => c.capability);
-    if (caps.includes("fs:delete") || caps.includes("exec:shell") || caps.includes("cloud:control")) {
+    if (caps.includes("fs:delete") || caps.includes("exec:shell") || caps.includes("cloud:control") || t.destructive) {
       requireConfirmation.add(t.name);
     }
   }
@@ -126,7 +128,9 @@ function pickDenyTarget(caps: Capability[], present: Set<Capability>): string | 
   if (caps.includes("db:write")) return "db:write";
   if (caps.includes("exec:code")) return "exec:code";
 
-  // Fall back to the last capability, which is the most dangerous by ordering.
+  // Fall back to the rule's *last required* capability. That is rule order,
+  // not a danger ranking — the deliberate choices above cover the rules whose
+  // dangerous half is known.
   return caps[caps.length - 1] ?? null;
 }
 

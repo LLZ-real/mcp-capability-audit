@@ -14,7 +14,7 @@
  */
 
 import type { Capability, Finding, McpTool, ToolCapabilities } from "./types.ts";
-import { isMutating, isNetworked } from "./capabilities.ts";
+import { isMutating, isNetworked, words } from "./capabilities.ts";
 
 interface CombinationRule {
   id: string;
@@ -159,19 +159,33 @@ export function compositionFindings(tools: ToolCapabilities[]): Finding[] {
 /**
  * Single-tool findings. These are the cases where one tool is bad on its own,
  * independent of what else the server exposes.
+ *
+ * Annotation handling follows the MCP 2025-06 spec: all ToolAnnotations are
+ * hints ("Clients should never make tool use decisions based on ToolAnnotations
+ * received from untrusted servers"), and the spec defaults are
+ * `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true`.
+ * A missing hint is therefore never a finding — the default already declares
+ * the behavior. Only an *explicit contradiction* between a hint and the
+ * extracted capabilities is reported.
  */
 export function toolFindings(tool: ToolCapabilities, raw: McpTool): Finding[] {
   const out: Finding[] = [];
   const caps = new Set(tool.capabilities.map((c) => c.capability));
 
-  // Shell execution reachable from a tool that does not look like a shell tool.
+  // Shell execution is the sharpest single-tool edge there is: whatever the
+  // tool looks like, `exec:shell` grants "run anything the process user can
+  // run". The detail must match the evidence that established the capability.
   if (caps.has("exec:shell")) {
+    const hasCommandParam = Object.keys(raw.inputSchema?.properties ?? {}).some((p) =>
+      ["command", "cmd", "script", "shell"].includes(p.toLowerCase()),
+    );
     out.push({
       id: "tool/arbitrary-shell",
       severity: "critical",
       title: `\`${raw.name}\` can execute arbitrary shell commands`,
-      detail:
-        "The tool accepts a command string and runs it. Whatever the description promises, the actual authority granted is 'run anything the process user can run'.",
+      detail: hasCommandParam
+        ? "The tool accepts a command string and runs it. Whatever the description promises, the actual authority granted is 'run anything the process user can run'."
+        : "The tool's declared name and description describe shell execution. Whatever the description promises, the actual authority granted is 'run anything the process user can run'.",
       capabilities: ["exec:shell"],
       tools: [raw.name],
       recommendation:
@@ -179,7 +193,8 @@ export function toolFindings(tool: ToolCapabilities, raw: McpTool): Finding[] {
     });
   }
 
-  // Writes that claim to be read-only.
+  // A hint that contradicts the extracted capabilities. `readOnlyHint`
+  // defaults to false, so only the explicit `true` can lie.
   if (raw.annotations?.readOnlyHint === true && [...caps].some(isMutating)) {
     out.push({
       id: "tool/readonly-lie",
@@ -192,29 +207,36 @@ export function toolFindings(tool: ToolCapabilities, raw: McpTool): Finding[] {
     });
   }
 
-  // Destructive without confirmation hint. Only true deletion counts --
-  // overwriting a file is a write, and conflating the two makes the finding
-  // fire on every write tool, which trains users to ignore it.
-  if (caps.has("fs:delete") && raw.annotations?.destructiveHint !== true) {
+  // Destructive updates while promising additive-only. `destructiveHint`
+  // defaults to true (spec), so a missing hint already declares "may be
+  // destructive" and is NOT a finding — only the explicit `false` contradicts
+  // real destruction. Only true destruction counts (see `looksDestructive` in
+  // capabilities.ts): overwriting a file is a write, and conflating the two
+  // makes the finding fire on every write tool.
+  if (raw.annotations?.destructiveHint === false && tool.destructive) {
     out.push({
-      id: "tool/undeclared-destructive",
+      id: "tool/destructive-lie",
       severity: "high",
-      title: `\`${raw.name}\` deletes data without \`destructiveHint\``,
+      title: `\`${raw.name}\` declares \`destructiveHint: false\` but destroys data`,
       detail:
-        "Clients rely on `destructiveHint` to gate a tool behind a confirmation prompt. Without it the deletion can be auto-approved.",
-      capabilities: ["fs:delete"],
+        "`destructiveHint: false` promises the tool performs only additive updates (MCP 2025-06 spec; the default is true). Clients use that promise to skip confirmation prompts; the detected capabilities contradict it.",
+      capabilities: [...caps].filter((c) => c === "fs:delete" || c === "db:write"),
       tools: [raw.name],
-      recommendation: "Set `annotations.destructiveHint: true`.",
+      recommendation: "Set `annotations.destructiveHint: true`, or fix the tool so it genuinely only adds data.",
     });
   }
 
-  // A network tool that does not declare it leaves the machine.
-  if ([...caps].some(isNetworked) && raw.annotations?.openWorldHint !== true) {
+  // Closed-world claim on a tool that interacts with external entities.
+  // `openWorldHint` defaults to true (spec), so absence is not a finding.
+  // This deliberately includes `net:listen`: a listening socket is reachable
+  // by external clients even though nothing leaves the machine, so the honest
+  // wording is "interacts with external entities", not "egress".
+  if (raw.annotations?.openWorldHint === false && [...caps].some(isNetworked)) {
     out.push({
-      id: "tool/undeclared-egress",
+      id: "tool/openworld-lie",
       severity: "medium",
-      title: `\`${raw.name}\` reaches the network without \`openWorldHint\``,
-      detail: "Undisclosed egress is what makes data-exfiltration review impossible for the client.",
+      title: `\`${raw.name}\` declares \`openWorldHint: false\` but interacts with external entities`,
+      detail: `\`openWorldHint: false\` promises a closed, local domain of interaction (MCP 2025-06 spec; the default is true). Detected capabilities contradict it: ${[...caps].filter(isNetworked).join(", ")}.`,
       capabilities: [...caps].filter(isNetworked),
       tools: [raw.name],
       recommendation: "Set `annotations.openWorldHint: true`.",

@@ -23,6 +23,13 @@ export interface McpTool {
   name: string;
   description?: string;
   inputSchema?: JSONSchema;
+  /**
+   * MCP 2025-06 ToolAnnotations. The spec calls these *hints*: they are not
+   * guaranteed faithful and clients must treat them as untrusted. Defaults:
+   * `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`,
+   * `openWorldHint: true`. Extraction never trusts them; the audit only flags
+   * explicit contradictions with detected capabilities.
+   */
   annotations?: {
     title?: string;
     readOnlyHint?: boolean;
@@ -101,7 +108,9 @@ export interface ToolCapabilities {
   capabilities: CapabilityHit[];
   /** True when the tool mutates anything at all. */
   mutating: boolean;
-  /** True when the tool's effects leave the machine. */
+  /** True when the tool destroys data: real deletion, or DDL that drops it. */
+  destructive: boolean;
+  /** True when the tool touches the network: outbound request, inbound listener, or browser automation. */
   networked: boolean;
   /** Tool-level risk, 0..100 (higher = worse). */
   risk: number;

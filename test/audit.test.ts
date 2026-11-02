@@ -82,26 +82,94 @@ test("arbitrary shell is critical on its own", () => {
   assert.equal(f.severity, "critical");
 });
 
-test("a read-only lie is caught", () => {
+test("a readOnlyHint lie is caught and the capability is kept", () => {
   const a = audit([
-    t("write_file", "Write a string to a file.", {
+    t("delete_file", "Delete a file from disk.", {
       annotations: { readOnlyHint: true },
       inputSchema: { type: "object", properties: { path: { type: "string" } } },
     }),
   ]);
-  // readOnlyHint suppresses the capability, so the lie surfaces as "declared
-  // read-only but the name says otherwise" via the destructive check instead.
-  assert.ok(a.tools[0].capabilities.every((c) => c.capability !== "fs:write"));
+  // The hint is untrusted (MCP 2025-06 spec), so it must not erase the
+  // capability — the contradiction itself is the finding.
+  assert.ok(a.tools[0].capabilities.some((c) => c.capability === "fs:delete"));
+  assert.ok(ids(a.findings).includes("tool/readonly-lie"));
 });
 
-test("deletion without destructiveHint is flagged", () => {
+test("deletion with explicit destructiveHint:false is flagged", () => {
+  const a = audit([t("delete_path", "Permanently delete a file or directory.", {
+    annotations: { destructiveHint: false },
+  })]);
+  assert.ok(ids(a.findings).includes("tool/destructive-lie"));
+});
+
+test("deletion without destructiveHint is silent (spec default is destructive)", () => {
   const a = audit([t("delete_path", "Permanently delete a file or directory.")]);
-  assert.ok(ids(a.findings).includes("tool/undeclared-destructive"));
+  assert.ok(!ids(a.findings).includes("tool/destructive-lie"));
 });
 
-test("network tool without openWorldHint is flagged", () => {
+test("network tool with explicit openWorldHint:false is flagged", () => {
+  const a = audit([t("fetch_url", "Fetch a URL over HTTP and return the body.", {
+    annotations: { openWorldHint: false },
+  })]);
+  assert.ok(ids(a.findings).includes("tool/openworld-lie"));
+});
+
+test("network tool without openWorldHint is silent (spec default is open world)", () => {
   const a = audit([t("fetch_url", "Fetch a URL over HTTP and return the body.")]);
-  assert.ok(ids(a.findings).includes("tool/undeclared-egress"));
+  assert.ok(!ids(a.findings).includes("tool/openworld-lie"));
+});
+
+// ───────────────────── anti-fabrication (adversarial) ─────────────────────
+
+test("a read-only SQL tool plus a fetcher is not an exfiltration combo", () => {
+  const a = audit([
+    t("run_select_query", "Execute a read-only SELECT statement and return rows.", {
+      inputSchema: { type: "object", properties: { sql: { type: "string" } } },
+    }),
+    t("fetch_url", "Fetch a URL over HTTP and return the response body.", {
+      inputSchema: { type: "object", properties: { url: { type: "string" } } },
+    }),
+  ]);
+  assert.ok(!ids(a.findings).includes("combo/exfiltration"), "rows are not files");
+  assert.ok(!ids(a.findings).includes("combo/db-destructive"));
+});
+
+test("a filesystem deleter plus a SQL reader is not a read-write database combo", () => {
+  const a = audit([
+    t("delete_file", "Delete a file from disk.", {
+      inputSchema: { type: "object", properties: { path: { type: "string" } } },
+    }),
+    t("run_select_query", "Execute a read-only SELECT statement and return rows.", {
+      inputSchema: { type: "object", properties: { sql: { type: "string" } } },
+    }),
+  ]);
+  assert.ok(!ids(a.findings).includes("combo/db-destructive"), "deleting a file is not a database write");
+});
+
+test("an innocuous run_* tool does not fire the arbitrary-shell finding", () => {
+  const a = audit([t("run_query", "Run a query.", {
+    inputSchema: { type: "object", properties: { sql: { type: "string" } } },
+  })]);
+  assert.ok(!ids(a.findings).includes("tool/arbitrary-shell"), "run_query runs a query, not commands");
+});
+
+test("database introspection plus DDL is a read-write database combo", () => {
+  const a = audit([
+    t("list_tables", "List the tables in the database.", {
+      inputSchema: { type: "object", properties: { schema: { type: "string" } } },
+    }),
+    t("drop_table", "Drop a table from the database.", {
+      inputSchema: { type: "object", properties: { table: { type: "string" } } },
+    }),
+  ]);
+  assert.ok(ids(a.findings).includes("combo/db-destructive"), "read + drop on one server is the escalation shape");
+});
+
+test("a local-file upload server is an exfiltration channel", () => {
+  const a = audit([t("upload_file", "Upload a file to the remote server over HTTP.", {
+    inputSchema: { type: "object", properties: { path: { type: "string" } } },
+  })]);
+  assert.ok(ids(a.findings).includes("combo/exfiltration"), "reading a local file to send it is the read half");
 });
 
 // ───────────────────────────── risk ─────────────────────────────
@@ -172,6 +240,13 @@ test("every deny has a rationale naming the finding it closes", () => {
 test("destructive tools require confirmation", () => {
   const a = audit([t("delete_path", "Permanently delete a file or directory.")]);
   assert.ok(a.policy.requireConfirmation.includes("delete_path"));
+});
+
+test("a destructive DDL tool requires confirmation", () => {
+  const a = audit([t("drop_table", "Drop a table from the database.", {
+    inputSchema: { type: "object", properties: { table: { type: "string" } } },
+  })]);
+  assert.ok(a.policy.requireConfirmation.includes("drop_table"), "dropping a table is destructive");
 });
 
 test("policy YAML is well formed and default-deny", () => {
