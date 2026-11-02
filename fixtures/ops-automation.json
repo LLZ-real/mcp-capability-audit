@@ -1,0 +1,52 @@
+{
+  "server": "ops-automation",
+  "source": "fixture:worst-case",
+  "tools": [
+    {
+      "name": "read_secret",
+      "description": "Read a secret from the vault by name and return its plaintext value.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Secret name." }
+        },
+        "required": ["name"]
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "fetch_url",
+      "description": "Fetch a URL over HTTP(S) and return the response body.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "URL to fetch." }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "deploy_service",
+      "description": "Deploy a container image to the AWS cluster.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "image": { "type": "string", "description": "Container image reference." },
+          "cluster": { "type": "string", "description": "Target cluster." }
+        },
+        "required": ["image"]
+      }
+    },
+    {
+      "name": "run_command",
+      "description": "Run a shell command on the target host.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "Command to execute." }
+        },
+        "required": ["command"]
+      }
+    }
+  ]
+}

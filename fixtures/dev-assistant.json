@@ -1,0 +1,78 @@
+{
+  "server": "dev-assistant",
+  "source": "fixture:realistic-dangerous",
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read a UTF-8 text file from disk and return its contents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "format": "path", "description": "Absolute path to read." }
+        },
+        "required": ["path"]
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "list_directory",
+      "description": "List the immediate children of a directory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "format": "path", "description": "Directory to list." }
+        },
+        "required": ["path"]
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "write_file",
+      "description": "Write a string to a file, creating it if needed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "format": "path", "description": "Destination path." },
+          "content": { "type": "string", "description": "UTF-8 text to write." }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "fetch_url",
+      "description": "Fetch a URL over HTTP(S) and return the response body.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "URL to fetch." }
+        },
+        "required": ["url"]
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "run_command",
+      "description": "Run a shell command and return its stdout and stderr.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "Shell command to execute." },
+          "cwd": { "type": "string", "description": "Working directory." }
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "read_env",
+      "description": "Read an environment variable by name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Variable name." }
+        },
+        "required": ["name"]
+      },
+      "annotations": { "readOnlyHint": true }
+    }
+  ]
+}

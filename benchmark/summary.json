@@ -1,0 +1,47 @@
+{
+  "generatedAt": "2026-11-02T08:36:38.144Z",
+  "totals": {
+    "checks": 23,
+    "falseNegatives": 0,
+    "falsePositives": 0,
+    "missing": 0,
+    "spurious": 0
+  },
+  "results": [
+    {
+      "file": "dev-assistant.json",
+      "detected": [
+        "fs:read",
+        "fs:write",
+        "net:out",
+        "exec:shell",
+        "env:read"
+      ],
+      "risk": 75,
+      "falseNegatives": [],
+      "falsePositives": []
+    },
+    {
+      "file": "filesystem-readonly.json",
+      "detected": [
+        "fs:read"
+      ],
+      "risk": 8,
+      "falseNegatives": [],
+      "falsePositives": []
+    },
+    {
+      "file": "ops-automation.json",
+      "detected": [
+        "secrets:read",
+        "net:out",
+        "cloud:control",
+        "exec:shell"
+      ],
+      "risk": 75,
+      "falseNegatives": [],
+      "falsePositives": []
+    }
+  ],
+  "failures": []
+}
