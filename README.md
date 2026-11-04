@@ -123,6 +123,10 @@ npx mcp-capability-audit capabilities                  # every capability's trig
 
 Exit codes: `0` no findings at/above `--fail-on` (or no `--fail-on` given) · `1` findings at/above `--fail-on` · `2` usage error.
 
+> **Not published to npm yet.** Until `npm publish` runs, build from source
+> (`npm install && npm run build && node dist/cli.js fixtures/`); the `npx`
+> commands above work after publishing.
+
 ### Library
 
 ```ts

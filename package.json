@@ -25,7 +25,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "node --experimental-strip-types src/cli.ts",
     "test": "node --experimental-strip-types --test --experimental-test-isolation=none test/*.test.ts",
-    "bench": "node --experimental-strip-types benchmark/run.ts"
+    "bench": "node --experimental-strip-types benchmark/run.ts",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
